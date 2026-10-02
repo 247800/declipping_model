@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from dataset import AudioDataset
-from model import DeclippingModel
+from model_dummy_dummy import DeclippingUNet as DeclippingModel
 
 def measurement_consistency_loss(x_hat, y, threshold, eps=1e-6):
     # eps = tolerance při zaokrouhlování floatu
@@ -17,10 +17,10 @@ def equivariance_loss(x_hat, model, threshold, g_min = 0.1, g_max = 2.0):
     x_g_hat = model(y_g)
     return torch.mean((x_g - x_g_hat) ** 2)
 
-def total_loss(x_hat, y, model, threshold, eps=1e-6, g_min=0.1, g_max=2.0):
+def total_loss(x_hat, y, model, threshold, eps=1e-6, g_min=0.1, g_max=2.0, lambda_w=1.0):
     L_mc = measurement_consistency_loss(x_hat, y, threshold, eps)
     L_ei = equivariance_loss(x_hat, model, threshold, g_min, g_max)
-    return L_mc + L_ei, L_mc, L_ei
+    return L_mc + lambda_w * L_ei, L_mc, L_ei
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,7 +30,7 @@ path = "dataset"
 dataset = AudioDataset(path)
 dataloader = DataLoader(dataset, batch_size=10, shuffle=True)
 
-x = next(iter(dataloader))
+x = next(iter(dataloader)).to(device)
 threshold = 0.1
 y = torch.clamp(x, -threshold, threshold)
 model = DeclippingModel().to(device)
@@ -45,8 +45,9 @@ gmax = 2.0
 # gmax = 1.5
 
 eps = 1e-6
+lambda_w = 0.1
 
-loss, loss_mc, loss_ei = total_loss(x_hat, y, model, threshold, eps, gmin, gmax)
+loss, loss_mc, loss_ei = total_loss(x_hat, y, model, threshold, eps, gmin, gmax, lambda_w)
 print(f"loss_mc = {loss_mc}")
 print(f"loss_ei = {loss_ei}")
 print(f"loss_total = {loss}")
