@@ -1,3 +1,5 @@
+# dummy model used to test functionality of other python files
+
 import torch
 from torch import nn
 
