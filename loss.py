@@ -34,7 +34,7 @@ def equivariance_loss(x_hat, model, threshold, g_min = 0.1, g_max = 2.0):
     gx_hat_reconstructed = model(y_g)
     gx_hat = center_crop_1d(
         gx_hat,
-        gx_hat.size(-1),
+        gx_hat_reconstructed.size(-1),
     )
     return torch.mean((gx_hat - gx_hat_reconstructed) ** 2)
 
