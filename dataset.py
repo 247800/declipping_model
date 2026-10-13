@@ -1,5 +1,4 @@
 import os
-import torch
 import torchaudio
 from torch.utils.data import Dataset, DataLoader
 from torch import nn
@@ -10,7 +9,6 @@ class AudioDataset(Dataset):
     Keep only segments with at least one sample
     that reaches or exceeds clipping threshold,
     discard everything else. Zero-pad final incomplete segments.
-    Clip the remaining segments before returning them.
     """
     def __init__(
         self,
@@ -19,21 +17,19 @@ class AudioDataset(Dataset):
         seg_len=None,
         mono=True,
         clipping_threshold=0.1,
-        apply_clipping=True,
         filter_unsaturated=True,
     ):
         super(AudioDataset, self).__init__()
-        self.apply_clipping = apply_clipping
-        self.sr = sr
         self.directory = directory
+        self.sr = sr
         self.seg_len = sr if seg_len is None else seg_len
 
         if self.seg_len != self.sr:
             raise ValueError(
                 "For 1-second segments, seg_len must equal sr."
             )
+
         self.mono = mono
-        self.appy_clipping = apply_clipping
         self.clipping_threshold = clipping_threshold
 
         if self.clipping_threshold <= 0:
@@ -92,11 +88,7 @@ class AudioDataset(Dataset):
         if audio.size(1) < self.seg_len:
             audio = nn.functional.pad(audio,(0, self.seg_len - audio.size(1)))
 
-        # Return (clipped) measurement
-        if self.apply_clipping:
-            return torch.clamp(audio,-self.clipping_threshold, self.clipping_threshold)
-        else:
-            return audio
+        return audio
 
     def print_params(self):
         print(f"Path:                   {self.directory}")
