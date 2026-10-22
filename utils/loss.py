@@ -47,7 +47,7 @@ def total_loss(x_hat, y, model, threshold, eps=1e-6, g_min=0.1, g_max=2.0, lambd
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    path = "dataset"
+    path = "../dataset"
     dataset = AudioDataset(path)
     dataloader = DataLoader(dataset, batch_size=10, shuffle=True)
 

@@ -3,13 +3,22 @@ import torch
 from torch.utils.data import DataLoader
 from dataset import AudioDataset
 from unet import DeclippingUNet
-from loss import total_loss
-import wandb
+from utils.loss import total_loss
+from utils import callback as cb
+from pathlib import Path
 
 def main():
-    wandb.login()
+    project_dir = Path(__file__).resolve().parent
+    run_name, uuid_code, paths = cb.create_run_dirs(
+        root=project_dir / "exports_train",
+        label="gtzan100", # adjust the label to the specific run; gtzan100 refers to 100 files from gtzan dataset
+    )
+    audio_dir = paths["audio"]
+    json_dir = paths["metadata"]
+    checkpoint_dir = paths["checkpoints"]
+    logs_dir = paths["logs"]
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # "cuda:0"
     print("using", device)
     torch.manual_seed(0)
 
@@ -23,10 +32,9 @@ def main():
     threshold = 0.1
 
     dataset_dir = "dataset"
-    weights_dir = "weights"
-    os.makedirs(weights_dir, exist_ok=True)
-
-    dataset = AudioDataset(directory=dataset_dir, clipping_threshold=threshold)
+    sr_expected = 22050   # sample rate of GTZAN files
+    sample_rate = cb.get_sr(dataset_dir, sr_expected)
+    dataset = AudioDataset(directory=dataset_dir, sr=sample_rate, clipping_threshold=threshold)
     if len(dataset) == 0:
         raise RuntimeError("Training dataset contains no segments.")
     dataset.print_params()
@@ -42,25 +50,13 @@ def main():
     model = DeclippingUNet().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    run = wandb.init(
-        project="declipping-unet-train",
-        name="first-training",
-        config={
-            "learning_rate": learning_rate,
-            "epochs": epochs,
-            "batch_size": batch_size,
-            "threshold": threshold,
-            "lambda_weight": lambda_weight,
-            "g_min": gmin,
-            "g_max": gmax,
-            "num_segments": len(dataset),
-        },
-    )
+    run = cb.wb_run(run_name, learning_rate, epochs, batch_size, threshold, lambda_weight, gmin, gmax, dataset, logs_dir)  # project="declipping-unet-train", job_type="training"
+    cb.save_json(json_dir / "train_files.json", dataset.files)
 
     global_step = 0
     best_loss = float("inf")
 
-    for epoch in range(epochs):
+    for epoch in range(1, epochs + 1):
         model.train()
         sum_loss = sum_mc = sum_ei = 0.0
         n_batches = 0
@@ -68,7 +64,6 @@ def main():
         for x in dataloader:
             x = x.to(device, non_blocking=True)    # [B, 1, 22050]
             y = torch.clamp(x, -threshold, threshold)
-
             optimizer.zero_grad()
             x_hat = model(y)
 
@@ -81,6 +76,7 @@ def main():
                 g_max=gmax,
                 lambda_w=lambda_weight,
             )
+
             loss.backward()
             optimizer.step()
 
@@ -90,28 +86,21 @@ def main():
             sum_ei += loss_ei.item()
             n_batches += 1
 
-            wandb.log({
-                "train/step_loss": loss.item(),
-                "train/step_loss_mc": loss_mc.item(),
-                "train/step_loss_ei": loss_ei.item(),
-            }, step=global_step)
+            if global_step % 50 == 0:
+                cb.wb_log_step(run, loss.item(),loss_mc.item(), loss_ei.item(), global_step)
+                cb.export_audio(audio_dir, x_hat[0], sample_rate, epoch, global_step, uuid_code)
 
         avg_loss = sum_loss / n_batches
         avg_mc = sum_mc / n_batches
         avg_ei = sum_ei / n_batches
 
-        wandb.log({
-            "epoch": epoch + 1,
-            "train/loss": avg_loss,
-            "train/loss_mc": avg_mc,
-            "train/loss_ei": avg_ei,
-        }, step=global_step)
+        if epoch % 10 == 0:
+            cb.wb_log_epoch(run, epoch, avg_loss, avg_mc, avg_ei, global_step)
 
-        print(f"Epoch [{epoch + 1}/{epochs}]  "
-              f"loss: {avg_loss:.6f}  loss_mc: {avg_mc:.6f}  loss_ei: {avg_ei:.6f}")
+        print(f"Epoch [{epoch:3d}/{epochs}] loss: {avg_loss:.6f}  loss_mc: {avg_mc:.6f}  loss_ei: {avg_ei:.6f}")
 
         checkpoint = {
-            "epoch": epoch + 1,
+            "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "loss": avg_loss,
@@ -119,17 +108,17 @@ def main():
         }
 
         # save last checkpoint
-        torch.save(checkpoint, os.path.join(weights_dir, f"{run.name}_{run.id}_last.pt"))
+        torch.save(checkpoint, os.path.join(checkpoint_dir, f"{run.name}_{run.id}_last.pt"))
 
         # save best
         if avg_loss < best_loss:
             best_loss = avg_loss
-            torch.save(checkpoint, os.path.join(weights_dir, f"{run.name}_{run.id}_best.pt"))
+            torch.save(checkpoint, os.path.join(checkpoint_dir, f"{run.name}_{run.id}_best.pt"))
 
-    # save final weights
-    torch.save(model.state_dict(), os.path.join(weights_dir, f"declipping_{run.name}_{run.id}.pt"))
+    # save final checkpoint
+    torch.save(model.state_dict(), os.path.join(checkpoint_dir, f"declipping_{run.name}_{run.id}.pt"))
 
-    wandb.finish()
+    run.finish()
 
 
 if __name__ == "__main__":

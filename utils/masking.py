@@ -11,7 +11,7 @@ def apply_mask(x_hat, y, tau = 0.95, mu = 0.1):
     return x_masked
 
 if __name__ == "__main__":
-    path = "dataset"
+    path = "../dataset"
     dataset = AudioDataset(path)
     dataloader = DataLoader(dataset, batch_size=10, shuffle=True)
     x = next(iter(dataloader))

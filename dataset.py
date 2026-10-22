@@ -35,9 +35,7 @@ class AudioDataset(Dataset):
         self.seg_len = sr if seg_len is None else seg_len
 
         if self.seg_len != self.sr:
-            raise ValueError(
-                "For 1-second segments, seg_len must equal sr."
-            )
+            raise ValueError("For 1-second segments, seg_len must equal sr.")
 
         self.mono = mono
         self.clipping_threshold = clipping_threshold
@@ -73,8 +71,7 @@ class AudioDataset(Dataset):
         if not 0 < dataset_idx < self.files_total:
             raise ValueError(
                 f"Cannot create non-empty train/test subsets from "
-                f"{self.files_total} files with "
-                f"ds_percent={self.ds_percent}. "
+                f"{self.files_total} files with ds_percent={self.ds_percent}."
                 f"Calculated split: {dataset_idx} training files and "
                 f"{self.files_total - dataset_idx} test files."
             )
@@ -92,10 +89,7 @@ class AudioDataset(Dataset):
             audio, loaded_sr = torchaudio.load(audio_file, normalize=True)
 
             if loaded_sr != self.sr:
-                raise ValueError(
-                    f"{audio_file}: expected sample rate "
-                    f"of {self.sr} but got {loaded_sr}"
-                )
+                raise ValueError(f"{audio_file}: expected sample rate of {self.sr} but got {loaded_sr}")
 
             if self.mono and audio.size(0) > 1:
                 audio = audio.mean(dim=0, keepdim=True)
@@ -121,10 +115,7 @@ class AudioDataset(Dataset):
             normalize=True,
         )
         if loaded_sr != self.sr:
-            raise ValueError(
-                f"{audio_file}: expected sample rate "
-                f"of {self.sr} but got {loaded_sr}"
-            )
+            raise ValueError(f"{audio_file}: expected sample rate of {self.sr} but got {loaded_sr}")
         if self.mono and audio.size(0) > 1:
             audio = audio.mean(dim=0, keepdim=True)
         if audio.size(1) < self.seg_len:
