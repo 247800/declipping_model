@@ -42,7 +42,7 @@ def get_sr(directory, expected_sr=None):
 def wb_run(run_name, learning_rate, epochs, batch_size, threshold, lambda_weight, gmin, gmax, dataset, logs_dir):
     wandb.login()
     run = wandb.init(
-        project="declipping-unet-train",
+        project="declipping-unet-training",
         name=run_name,
         job_type="training",
         dir=str(logs_dir),
