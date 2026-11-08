@@ -1,5 +1,4 @@
 import wandb
-import torchaudio
 import soundfile as sf
 from pathlib import Path
 import torch
@@ -10,7 +9,11 @@ import json
 
 
 def create_run_dirs(root, label):
-    """Create exclusive directory for one training run"""
+    """
+    Create exclusive directory for one training run.
+    Label refers to dataset used for training.
+    Unique uuid code is generated for each new run.
+    """
     safe_label = re.sub(r"[^A-Za-z0-9_-]+", "-", label).strip("-")
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -27,14 +30,18 @@ def create_run_dirs(root, label):
     for name in ("checkpoints", "audio", "logs", "metadata"):
         paths[name] = run_dir / name
         paths[name].mkdir()
-
+    for name in ("original", "clipped", "reconstructed"):
+        paths[name] = paths["audio"] / name
+        paths[name].mkdir()
     return run_name, uuid_code, paths
 
 def get_sr(directory, expected_sr=None):
-    files = sorted(p for p in Path(directory).iterdir() if p.is_file() and p.suffix.lower() == ".wav")
+    # files = sorted(p for p in Path(directory).iterdir() if p.is_file() and p.suffix.lower() == ".wav")
+    files = sorted(p for p in Path(directory).rglob("*") if p.is_file() and p.suffix.lower() == ".wav")
     if not files:
         raise FileNotFoundError(f"No WAV files found in {directory!r}")
-    _, loaded_sr = torchaudio.load(str(files[0]))
+    # _, loaded_sr = torchaudio.load(str(files[0]))
+    loaded_sr = sf.info(str(files[0])).samplerate
     if expected_sr is not None and loaded_sr != expected_sr:
         raise ValueError(f"{files[0]}: expected sample rate of {expected_sr} but got {loaded_sr} instead")
     return loaded_sr
@@ -83,7 +90,7 @@ def wb_log_epoch(run, epoch, avg_loss, avg_mc, avg_ei, global_step):
         "train/loss_ei": avg_ei,
     })
 
-def export_audio(output_dir, wf, sr, epoch, global_step, uuid_code):
+def export_audio(output_dir, wf, sr, epoch, global_step, uuid_code, name="reconstructed"):
     if wf.ndim != 2:
         raise ValueError("Expected waveform with shape [channels, samples].")
 
@@ -94,7 +101,7 @@ def export_audio(output_dir, wf, sr, epoch, global_step, uuid_code):
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    filename = (f"{uuid_code}_epoch{epoch:03d}_step{global_step:07d}_reconstructed.wav")
+    filename = (f"{uuid_code}_epoch{epoch:03d}_step{global_step:07d}_{name}.wav")
     path = output_dir / filename
 
     # Exclusive mode protects existing files even inside the same run

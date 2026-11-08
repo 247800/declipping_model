@@ -11,9 +11,8 @@ def main():
     project_dir = Path(__file__).resolve().parent
     run_name, uuid_code, paths = cb.create_run_dirs(
         root=project_dir / "exports_train",
-        label="gtzan100", # adjust the label to the specific run; gtzan100 refers to 100 files from gtzan dataset
+        label="gtzan-all", # adjust the label to the specific run; gtzan100 refers to 100 files from gtzan dataset
     )
-    audio_dir = paths["audio"]
     json_dir = paths["metadata"]
     checkpoint_dir = paths["checkpoints"]
     logs_dir = paths["logs"]
@@ -31,7 +30,7 @@ def main():
     batch_size = 35
     threshold = 0.1
 
-    dataset_dir = "dataset"
+    dataset_dir = "genres_original"
     sr_expected = 22050   # sample rate of GTZAN files
     sample_rate = cb.get_sr(dataset_dir, sr_expected)
     dataset = AudioDataset(directory=dataset_dir, sr=sample_rate, clipping_threshold=threshold)
@@ -86,9 +85,11 @@ def main():
             sum_ei += loss_ei.item()
             n_batches += 1
 
-            if global_step % 50 == 0:
+            if global_step % 100 == 0:
                 cb.wb_log_step(run, loss.item(),loss_mc.item(), loss_ei.item(), global_step)
-                cb.export_audio(audio_dir, x_hat[0], sample_rate, epoch, global_step, uuid_code)
+                cb.export_audio(paths["original"], x[0],sample_rate, epoch, global_step, uuid_code,"original")
+                cb.export_audio(paths["clipped"], y[0], sample_rate, epoch, global_step, uuid_code, "clipped")
+                cb.export_audio(paths["reconstructed"], x_hat[0], sample_rate, epoch, global_step, uuid_code, "reconstructed")
 
         avg_loss = sum_loss / n_batches
         avg_mc = sum_mc / n_batches

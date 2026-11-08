@@ -1,7 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from dataset import AudioDataset
-from model import DeclippingModel
+from unet import DeclippingUNet
 
 def apply_mask(x_hat, y, tau = 0.95, mu = 0.1):
     zero = torch.zeros((), dtype=y.dtype, device=y.device)
@@ -17,7 +17,7 @@ if __name__ == "__main__":
     x = next(iter(dataloader))
     threshold = 0.1
     y = torch.clamp(x, -threshold, threshold)
-    model = DeclippingModel()
+    model = DeclippingUNet()
     x_hat = model(y)
 
     # y = torch.tensor([0.2, 0.5, 0.94, 1.0, -1.0, -0.5, 0.99])
