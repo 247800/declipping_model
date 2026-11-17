@@ -1,15 +1,19 @@
 import os
-import torchaudio
+import torch
+import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 from torch import nn
 import random
+import soundfile as sf
+from pathlib import Path
 
 class AudioDataset(Dataset):
     """
     Load non-overlapping 1s-segments of audio from dataset files.
     Split files into training and testing subsets.
-    Keep only segments containing at least one sample
-    that reaches or exceeds clipping threshold.
+    Preload retained mono segments into self.data [N, seg_len].
+    Store aligned metadata in self.df: index, file_name, startframe.
+    Optionally keep only segments containing at least one sample that reaches or exceeds clipping threshold.
     Zero-pad the final incomplete segment of each file.
     """
     def __init__(
@@ -23,6 +27,7 @@ class AudioDataset(Dataset):
         train=True,
         ds_percent=80,
         seed=42,
+
     ):
         super(AudioDataset, self).__init__()
 
@@ -53,10 +58,10 @@ class AudioDataset(Dataset):
         self.seed = seed
 
         files = sorted(
-            os.path.join(self.directory, file)
-            for file in os.listdir(self.directory)
+            os.path.join(root, file)
+            for root, _, filenames in os.walk(self.directory)
+            for file in filenames
             if file.lower().endswith(".wav")
-            and os.path.isfile(os.path.join(self.directory, file))
         )
 
         if not files:
@@ -64,38 +69,46 @@ class AudioDataset(Dataset):
 
         random.Random(self.seed).shuffle(files)
 
-        # Divide files for training and testing
+        # Calculate train/test subset sizes from the complete dataset
         self.files_total = len(files)
         dataset_idx = int(self.files_total * (self.ds_percent / 100))
+        test_files_count = self.files_total - dataset_idx
 
         if not 0 < dataset_idx < self.files_total:
             raise ValueError(
                 f"Cannot create non-empty train/test subsets from "
                 f"{self.files_total} files with ds_percent={self.ds_percent}."
                 f"Calculated split: {dataset_idx} training files and "
-                f"{self.files_total - dataset_idx} test files."
+                f"{test_files_count} test files."
             )
 
+        # create train/test subset
         if self.train:
             self.files = files[:dataset_idx]  # First part of the dataset for training
         else:
-            self.files = files[dataset_idx:]  # Remaining files for testing
+            self.files = files[dataset_idx:]
+
+        if not self.mono:
+            raise ValueError("Output shape [N, seg_len] requires mono=True.")
 
         self.segments = []
         self.discarded_segments = 0
+        segment_tensors = []
+        metadata = []
 
-        # Building index of non-overlapping 1s segments (with saturation)
         for audio_file in self.files:
-            audio, loaded_sr = torchaudio.load(audio_file, normalize=True)
+            samples, loaded_sr = sf.read(audio_file, dtype="float32", always_2d=True)
 
             if loaded_sr != self.sr:
                 raise ValueError(f"{audio_file}: expected sample rate of {self.sr} but got {loaded_sr}")
 
-            if self.mono and audio.size(0) > 1:
-                audio = audio.mean(dim=0, keepdim=True)
+            audio = torch.from_numpy(samples.T.copy()) # [n_channels, n_samples]
+            if audio.size(0) > 1:     # verify number of channels
+                audio = audio.mean(dim=0, keepdim=True)   # [1, n_samples]
 
-            for start_sample in range(0, audio.size(1), self.seg_len):
-                segment = audio[:, start_sample:start_sample + self.seg_len]
+            file_name = os.path.relpath(audio_file, self.directory)
+            for startframe in range(0, audio.size(1), self.seg_len):
+                segment = audio[0, startframe:startframe + self.seg_len]   # split file into segments
 
                 # Keep segments whose clipped measurement reaches or exceeds threshold
                 if self.filter_unsaturated:
@@ -104,24 +117,38 @@ class AudioDataset(Dataset):
                         self.discarded_segments += 1
                         continue
 
-                # With filtering disabled, retain every segment
-                self.segments.append((audio_file, start_sample))
+                # zero-pad incomplete segments
+                if segment.numel() < self.seg_len:
+                    segment = nn.functional.pad(
+                        segment, (0, self.seg_len - segment.numel())
+                    )
+
+                index = len(segment_tensors)
+                segment_tensors.append(segment.clone())  # copy segment into segment_tensors
+                self.segments.append((audio_file, startframe))  # save its origin
+                metadata.append({
+                    "index": index,
+                    "file_name": file_name,
+                    "startframe": startframe,
+                })
+
+        # stack segments of shape [seg_len] into a tensor of shape [n_segments, seg_len]
+        self.data = (
+            torch.stack(segment_tensors, dim=0)
+            if segment_tensors
+            else torch.empty((0, self.seg_len), dtype=torch.float32)
+        )
+        self.df = pd.DataFrame(
+            metadata, columns=["index", "file_name", "startframe"]
+        )
+        self._segment_indices = {
+            key: index for index, key in enumerate(self.segments)
+        }
 
     def load_segment(self, audio_file, start_sample):
-        audio, loaded_sr = torchaudio.load(
-            audio_file,
-            frame_offset=start_sample,
-            num_frames=self.seg_len,
-            normalize=True,
-        )
-        if loaded_sr != self.sr:
-            raise ValueError(f"{audio_file}: expected sample rate of {self.sr} but got {loaded_sr}")
-        if self.mono and audio.size(0) > 1:
-            audio = audio.mean(dim=0, keepdim=True)
-        if audio.size(1) < self.seg_len:
-            audio = nn.functional.pad(audio,(0, self.seg_len - audio.size(1)))
+        index = self._segment_indices[(audio_file, start_sample)]
+        return self.data[index].clone()
 
-        return audio
 
     def print_params(self):
         print(f"Path:                   {self.directory}")
@@ -139,23 +166,33 @@ class AudioDataset(Dataset):
 
 
     def __len__(self):
-        return len(self.segments)
+        return self.data.size(0)
 
     def __getitem__(self, index):
-        audio_file, start_sample = self.segments[index]
-        return self.load_segment(audio_file, start_sample)
+        return self.data[index].clone()
 
 
 if __name__ == "__main__":
+    project_dir = Path(__file__).resolve().parent
+    training_run = "20261023_105951_gtzan100_46dc"
+    run_dir = (project_dir / "exports_train" / training_run)
+    train_files_json = run_dir / "metadata" / "train_files.json"
+
     dataset = AudioDataset(
-        directory="dataset",
+        directory="genres_original",
         sr=22050,
         seg_len=22050,
         mono=True,
         clipping_threshold=0.1,
-        train=False
+        filter_unsaturated=True,
+        train=True,
+        ds_percent=75,
+
     )
     dataset.print_params()
+    print(f"Data tensor shape:      {dataset.data.shape}")
+    print(f"Metadata shape:         {dataset.df.shape}")
+    print(dataset.df.head())
     if len(dataset) == 0:
         raise RuntimeError("No audio segments are available in the selected subset.")
     dataloader = DataLoader(dataset, batch_size=35)
