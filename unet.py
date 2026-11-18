@@ -9,14 +9,18 @@ def center_crop_1d(x, target_length):
     """
     current_length = x.size(-1)
     if current_length < target_length:
+        raise ValueError(f"Cannot crop length {current_length} to larger length {target_length}.")
+    left = (current_length - target_length) // 2
+    return x[..., left:left + target_length]
+
+def prepare_unet_input(x):
+    """Crop a waveform batch to a valid input length for U-Net."""
+    current_length = x.size(-1)
+    if current_length < 380:
         raise ValueError(
-            f"Cannot crop tensor from length {current_length} "
-            f"to larger target length {target_length}."
-        )
-    difference = current_length - target_length
-    left = difference // 2
-    right = left + target_length
-    return x[:, :, left:right]
+            f"U-Net requires at least 380 input samples, received {current_length}.")
+    target_length = current_length - ((current_length - 28) % 32)
+    return center_crop_1d(x, target_length)
 
 class DoubleConv1D(nn.Module):
     """
