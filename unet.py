@@ -1,12 +1,9 @@
 import torch
 from torch import nn
+import math
 
 def center_crop_1d(x, target_length):
-    """
-    Applying skip connections requires cropping feature maps from the contracting path
-    to match the size of the corresponding feature maps in the expanding path.
-    (The size mismatch is caused by no padding in U-net's convolutions)
-    """
+    """Crop the last dimension while preserving leading dimensions."""
     current_length = x.size(-1)
     if current_length < target_length:
         raise ValueError(f"Cannot crop length {current_length} to larger length {target_length}.")
@@ -17,8 +14,7 @@ def prepare_unet_input(x):
     """Crop a waveform batch to a valid input length for U-Net."""
     current_length = x.size(-1)
     if current_length < 380:
-        raise ValueError(
-            f"U-Net requires at least 380 input samples, received {current_length}.")
+        raise ValueError(f"U-Net requires at least 380 input samples, received {current_length}.")
     target_length = current_length - ((current_length - 28) % 32)
     return center_crop_1d(x, target_length)
 
@@ -69,9 +65,21 @@ class UpBlock1D(nn.Module):
             in_channels=out_channels + skip_channels,
             out_channels=out_channels,
         )
+
     def forward(self, x, skip_features):
         x = self.upconv(x)
-        skip_features = center_crop_1d(x=skip_features, target_length=x.size(-1))
+        crop_difference = skip_features.size(-1) - x.size(-1)
+        if crop_difference < 0 or crop_difference % 2 != 0:
+            raise ValueError(
+                "Skip connection requires a non-negative, even "
+                f"length difference; got {crop_difference}. "
+                f"Skip length={skip_features.size(-1)}, "
+                f"upsampled length={x.size(-1)}."
+            )
+        skip_features = center_crop_1d(
+            x=skip_features,
+            target_length=x.size(-1),
+        )
         x = torch.cat((skip_features, x), dim=1)
         return self.double_conv(x)
 
@@ -90,59 +98,96 @@ class DeclippingUNet(nn.Module):
             )
 
         # Contracting path
-        self.enc1 = DoubleConv1D(input_channels, 64)
+        self.enc1 = DoubleConv1D(input_channels, 16)
         self.pool1 = nn.MaxPool1d(kernel_size=2, stride=2)
 
-        self.enc2 = DoubleConv1D(64, 128)
+        self.enc2 = DoubleConv1D(16, 32)
         self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)
 
-        self.enc3 = DoubleConv1D(128, 256)
+        self.enc3 = DoubleConv1D(32, 64)
         self.pool3 = nn.MaxPool1d(kernel_size=2, stride=2)
 
-        self.enc4 = DoubleConv1D(256, 512)
+        self.enc4 = DoubleConv1D(64, 128)
         self.pool4 = nn.MaxPool1d(kernel_size=2, stride=2)
 
-        self.enc5 = DoubleConv1D(512, 1024)
+        self.enc5 = DoubleConv1D(128, 256)
         self.pool5 = nn.MaxPool1d(kernel_size=2, stride=2)
 
         # Bottom of the U
-        self.bottleneck = DoubleConv1D(1024, 2048)
+        self.bottleneck = DoubleConv1D(256, 512)
 
         # Expansive path with copy-and-crop skip connections
         self.dec5 = UpBlock1D(
-            in_channels=2048,
-            skip_channels=1024,
-            out_channels=1024,
-        )
-        self.dec4 = UpBlock1D(
-            in_channels=1024,
-            skip_channels=512,
-            out_channels=512,
-        )
-        self.dec3 = UpBlock1D(
             in_channels=512,
             skip_channels=256,
             out_channels=256,
         )
-        self.dec2 = UpBlock1D(
+        self.dec4 = UpBlock1D(
             in_channels=256,
             skip_channels=128,
             out_channels=128,
         )
-        self.dec1 = UpBlock1D(
+        self.dec3 = UpBlock1D(
             in_channels=128,
             skip_channels=64,
             out_channels=64,
         )
+        self.dec2 = UpBlock1D(
+            in_channels=64,
+            skip_channels=32,
+            out_channels=32,
+        )
+        self.dec1 = UpBlock1D(
+            in_channels=32,
+            skip_channels=16,
+            out_channels=16,
+        )
 
         self.output_conv = nn.Conv1d(
-            in_channels=64,
+            in_channels=16,
             out_channels=output_channels,
             kernel_size=1,
             stride=1,
             padding=0,
             bias=False,
         )
+
+        self.initialize_weights()
+
+    def initialize_weights(self):
+        """Initialize weights for the current bias-free architecture."""
+        for module in self.modules():
+            if isinstance(module, nn.Conv1d):
+                nonlinearity = (
+                    "linear" if module is self.output_conv else "relu"
+                )
+                nn.init.kaiming_normal_(
+                    module.weight,
+                    mode="fan_in",
+                    nonlinearity=nonlinearity,
+                )
+
+            elif isinstance(module, nn.ConvTranspose1d):
+                # This rule assumes non-overlapping upsampling.
+                if (
+                    module.kernel_size != (2,)
+                    or module.stride != (2,)
+                    or module.padding != (0,)
+                    or module.output_padding != (0,)
+                    or module.dilation != (1,)
+                    or module.groups != 1
+                ):
+                    raise ValueError(
+                        "Recheck initialization for the modified upconvolution."
+                    )
+
+                # Each output sample sums one value per input channel.
+                # No activation immediately follows this upconvolution.
+                nn.init.normal_(
+                    module.weight,
+                    mean=0.0,
+                    std=1.0 / math.sqrt(module.in_channels),
+                )
 
     def forward(self, x):
         input_was_2d = x.ndim == 2
@@ -157,6 +202,16 @@ class DeclippingUNet(nn.Module):
         if x.size(1) != 1:
             raise ValueError(
                 f"Expected one waveform channel, received {x.size(1)}."
+            )
+
+        # verify signal length to ensure symmetrical crop
+        length = x.size(-1)
+        if length < 380 or (length - 28) % 32 != 0:
+            raise ValueError(
+                f"Invalid U-Net input length: {length}. "
+                "Expected length >= 380 and "
+                "(length - 28) % 32 == 0. "
+                "Call prepare_unet_input before model(...)."
             )
 
         # Encoder
