@@ -6,7 +6,8 @@ from pathlib import Path
 
 
 def measurement_consistency_loss(x_hat, y, threshold):
-    y = center_crop_1d(y, x_hat.size(-1))
+    if x_hat.shape != y.shape:
+        y = center_crop_1d(y, x_hat.size(-1))
     cond_mask = (y.abs() < threshold) | (torch.sign(y) * x_hat < threshold)
     h = torch.where(cond_mask, y - x_hat, torch.zeros_like(y))
     return torch.sum(h ** 2)
@@ -28,8 +29,8 @@ def equivariance_loss(x_hat, model, threshold, g_min = 0.1, g_max = 2.0, detach_
         gx_hat,
         gx_hat_reconstructed.size(-1),
     )
-    return torch.mean((gx_hat - gx_hat_reconstructed) ** 2)
-    # return torch.sum((gx_hat - gx_hat_reconstructed) ** 2)
+    # return torch.mean((gx_hat - gx_hat_reconstructed) ** 2)
+    return torch.sum((gx_hat - gx_hat_reconstructed) ** 2)
 
 def total_loss(x_hat, y, model, threshold, g_min=0.1, g_max=2.0, lambda_w=1.0, detach_ei=False):
     L_mc = measurement_consistency_loss(
